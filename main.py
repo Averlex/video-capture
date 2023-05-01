@@ -1,5 +1,4 @@
 import cv2 as cv
-from typing import Any, overload
 import multiprocessing as mp
 import multiprocessing.connection as conn
 import time
@@ -43,6 +42,36 @@ class FrameProcessor:
             self.img = cv.resize(self.img, (int(self.width * xfact), int(self.height * yfact)))
         self.width = self.img.shape[1]
         self.height = self.img.shape[0]
+        return None
+
+    # Adopt for possible enlarging
+    def rescale_with_fields(self, width: int = -1, height: int = -1) -> None:
+        if width <= 0 or height <= 0:
+            pass
+        else:
+            act_width = self.img.shape[1]
+            act_height = self.img.shape[0]
+            factor = min(width / act_width, height / act_height)
+            self.img = cv.resize(self.img, (int(act_width * factor), int(act_height * factor)))
+
+            new_width = self.img.shape[1]
+            new_height = self.img.shape[0]
+            # new_img = np.zeros((height, width, 3))
+            delta_x = int((width - new_width) / 2.)
+            delta_y = int((height - new_height) / 2.)
+
+            # !!!! Needs testing !!!!
+            if delta_x > 0:
+                line = np.zeros((height, delta_x, 3))
+                self.img = np.hstack((line, self.img / 255, line))
+            elif delta_y > 0:
+                line = np.zeros((delta_y, width, 3))
+                self.img = np.vstack((line, self.img / 255, line))
+
+            # new_img[delta_y: (height - delta_y + 1)][delta_x: (width - delta_x + 1)][:] = self.img
+
+            # self.img = new_img
+
         return None
 
 
@@ -89,14 +118,14 @@ def get_frames(q: mp.Queue, source: int | str) -> None:
         # Getting frames while possible
         while True:
             # Measuring time between readings and perform the next reading
-            delay = int(time.time() - prev)
+            delay = int((time.time() - prev) * 1000)
             if delay == 0:
                 delay = 1
             is_frame, frame = istream.read()
             prev = time.time()
 
             # No frame read means that no more are expected
-            if not is_frame:
+            if is_frame is None:
                 q.put((delay, None))
                 break
             else:
@@ -130,7 +159,10 @@ def processing(q: mp.Queue, transmitter: conn.Connection) -> None:
             break
 
         # Do some stuff here
-        frame.rescale(640, 480)
+        desired_width = 1024
+        desired_height = 512
+        # frame.rescale(640, 480)
+        frame.rescale_with_fields(desired_width, desired_height)
 
         # Source delay is measured in msc's, that's why we use 1000. * ...
         frame.actual_delay = time.time() - prev_recording
