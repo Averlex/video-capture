@@ -5,6 +5,28 @@ import time
 import numpy as np
 
 
+"""
+logs
+"""
+
+
+class CustomTimer:
+    def __init__(self):
+        """
+        Initializes list of time measurements and an actual delay in ms of int type
+        """
+        self.values = []
+        self.delay = 0
+
+    def count(self) -> None:
+        """
+        Measures current time with time.perf_counter(), places value in the list and calculating actual delay in ms
+        :return: None
+        """
+        self.values.append(time.perf_counter())
+        self.delay = int((self.values[-1] - self.values[-2]) * 1000)
+
+
 class FrameProcessor:
     def __init__(self, frame: np.ndarray, source_delay: int):
         self.img: np.ndarray | None = frame
@@ -56,7 +78,6 @@ class FrameProcessor:
 
             new_width = self.img.shape[1]
             new_height = self.img.shape[0]
-            # new_img = np.zeros((height, width, 3))
             delta_x = int((width - new_width) / 2.)
             delta_y = int((height - new_height) / 2.)
 
@@ -68,21 +89,17 @@ class FrameProcessor:
                 line = np.zeros((delta_y, width, 3))
                 self.img = np.vstack((line, self.img / 255, line))
 
-            # new_img[delta_y: (height - delta_y + 1)][delta_x: (width - delta_x + 1)][:] = self.img
-
-            # self.img = new_img
-
         return None
 
 
-def get_frames(q: mp.Queue, source: int | str) -> None:
+def get_frames(q: mp.Queue, source: int | str, external_q: mp.Queue) -> None:
     """
     Reads frames from the targeted source. Both file and camera stream are supported \n\n
     For camera: the registered delay between frames is equal to the real one or equal 1 (if there were no delay at all)\
     \n\n
     Function passes both delay and the read frame to another process for upcoming operations as a tuple\n
     Passes None as an indicator of stream ending \n
-    :param q: queue used for trasfering data between 2 processes
+    :param q: queue used for transferring data between 2 processes
     :param source: video source. Expected 0 for camera or a string value for a file
     :return: None
     :raises Nothing: TODO
@@ -101,13 +118,13 @@ def get_frames(q: mp.Queue, source: int | str) -> None:
         # Getting frames while possible
         while True:
             is_frame, frame = istream.read()
-            # No frame read means that no more are expected
-            if not is_frame:
-                q.put((delay, None))
-                break
 
             # Sending for processing
             q.put((delay, frame))
+
+            # No frame read means that no more are expected
+            if not is_frame:
+                break
 
             # Delaying the next reading (can afford since it's from the file) -> no queue overflow
             cv.waitKey(delay)
@@ -124,12 +141,10 @@ def get_frames(q: mp.Queue, source: int | str) -> None:
             is_frame, frame = istream.read()
             prev = time.time()
 
+            q.put((delay, frame))
             # No frame read means that no more are expected
             if is_frame is None:
-                q.put((delay, None))
                 break
-            else:
-                q.put((delay, frame))
 
     # Releasing capturing object
     istream.release()
@@ -137,7 +152,7 @@ def get_frames(q: mp.Queue, source: int | str) -> None:
     return None
 
 
-def processing(q: mp.Queue, transmitter: conn.Connection) -> None:
+def processing(q: mp.Queue, transmitter: conn.Connection, external_q: mp.Queue) -> None:
     """
     Processes the incoming frame and then transferring it to another process responsible for drawing
     :param q: queue used for transferring source frames to this process. Tuples of (delay, frame) are expected
@@ -167,7 +182,7 @@ def processing(q: mp.Queue, transmitter: conn.Connection) -> None:
         # Source delay is measured in msc's, that's why we use 1000. * ...
         frame.actual_delay = time.time() - prev_recording
         frame.source_fps = int(1000. / frame.delay)
-        frame.show_fps()
+        #frame.show_fps()
 
         # Sending forward to showing part
         transmitter.send((frame.delay, frame.img))
@@ -178,7 +193,7 @@ def processing(q: mp.Queue, transmitter: conn.Connection) -> None:
     return None
 
 
-def show_frames(receiver: conn.Connection | None) -> None:
+def show_frames(receiver: conn.Connection | None, external_q: mp.Queue) -> None:
     """
     Function designed for raw frame drawing in a separate process with a given delay
     :param receiver: connection object used for receiving data. Tuples (delay, frame) expected
@@ -196,24 +211,25 @@ def show_frames(receiver: conn.Connection | None) -> None:
             break
 
         cv.imshow("Some video", frame)
-        cv.waitKey(delay)
+        cv.waitKey(1)
 
     return None
 
 
 if __name__ == "__main__":
 
-    source = "World Of Warcraft - Retail 2022.01.24 - 17.54.03.01.mp4"
-    # source = 0
+    # source = "World Of Warcraft - Retail 2022.01.24 - 17.54.03.01.mp4"
+    source = 0
     # source = "Новиков 5.2 лекция 15.03.mkv"
 
     queue = mp.Queue()
-    capture_proc = mp.Process(target=get_frames, args=(queue, source,))
+    ext_q = mp.Queue()
+    capture_proc = mp.Process(target=get_frames, args=(queue, source, ext_q))
     capture_proc.start()
     operation_conn, output_conn = mp.Pipe()
-    operation_proc = mp.Process(target=processing, args=(queue, operation_conn,))
+    operation_proc = mp.Process(target=processing, args=(queue, operation_conn, ext_q))
     operation_proc.start()
-    showing_proc = mp.Process(target=show_frames, args=(output_conn,))
+    showing_proc = mp.Process(target=show_frames, args=(output_conn, ext_q))
     showing_proc.start()
 
     capture_proc.join()
