@@ -7,57 +7,79 @@ import numpy as np
 
 """
 logs
+calculating resizing params on class init for FrameProcessor
 """
 
 
 class CustomTimer:
+    """
+    A simple timer intended for storing time measurements and calculating current delay
+    """
     def __init__(self):
         """
         Initializes list of time measurements and an actual delay in ms of int type
         """
-        self.values = []
-        self.delay = 0
+        self.values = [time.time()]
+        self.delay = 1
 
     def count(self) -> None:
         """
         Measures current time with time.perf_counter(), places value in the list and calculating actual delay in ms
         :return: None
         """
-        self.values.append(time.perf_counter())
+        self.values.append(time.time())
         self.delay = int((self.values[-1] - self.values[-2]) * 1000)
 
 
 class FrameProcessor:
-    def __init__(self, frame: np.ndarray, source_delay: int):
+    """
+    Class that working with a single frame
+    """
+    def __init__(self, frame: np.ndarray | None):
+        """
+        On init defines the shape of the frame
+        :param frame: source <ndarray> storing the frame data
+        """
         self.img: np.ndarray | None = frame
-        self.delay = source_delay
+        # Actual delay measured from the source
+        self.delay = 1
 
+        # Getting the frame shape, None in case no frames were read
         if self.img is not None:
             self.width = self.img.shape[1]
             self.height = self.img.shape[0]
             self.__source_width = self.width
             self.__source_height = self.height
 
-        self.actual_delay = 0
-        self.source_fps = int(1000. / source_delay)
-        self.actual_fps = 0
+        # Actual delay (the one we get during processing)
+        self.actual_delay = 1
 
         return
 
-    def calc_fps(self) -> int:
-        if self.actual_delay != 0:
-            # Local fps is measured in seconds
-            self.actual_fps = int(1. / self.actual_delay)
-        return self.actual_fps
-
     def show_fps(self) -> None:
-        self.img = cv.putText(self.img, "{:.0f} Source FPS".format(self.source_fps),
+        """
+        Method shows fps values on the current frame: source(expected) and the real one (got from processing) \n
+        Both values are calculated based on delay values stored
+        :return: None
+        """
+        source_fps = int(1000. / self.delay)
+        actual_fps = int(1000. / self.actual_delay)
+
+        self.img = cv.putText(self.img, "{:.0f} Source FPS".format(source_fps),
                               (10, 50), cv.FONT_HERSHEY_SIMPLEX, 1.0, (62, 152, 40), thickness=2)
-        self.img = cv.putText(self.img, "{:.0f} Possible FPS".format(self.calc_fps()),
+        self.img = cv.putText(self.img, "{:.0f} Output FPS".format(actual_fps),
                               (10, 90), cv.FONT_HERSHEY_SIMPLEX, 1.0, (249, 54, 54), thickness=2)
         return None
 
     def rescale(self, width: int = -1, height: int = -1, xfact: float = 1., yfact: float = 1.) -> None:
+        """
+        Deprecated; used for simple rescaling. Might be needed later, but I'm not yet sure about it
+        :param width:
+        :param height:
+        :param xfact:
+        :param yfact:
+        :return:
+        """
         if width > 0 and height > 0:
             self.img = cv.resize(self.img, (width, height))
         else:
@@ -66,8 +88,14 @@ class FrameProcessor:
         self.height = self.img.shape[0]
         return None
 
-    # Adopt for possible enlarging
     def rescale_with_fields(self, width: int = -1, height: int = -1) -> None:
+        """
+        Rescales the frame to the set values. Add black lines if ratio differs \n
+        TODO: adopt for possible frame enlarging. Need some overall testing
+        :param width: width to set
+        :param height: height to set
+        :return: None
+        """
         if width <= 0 or height <= 0:
             pass
         else:
@@ -101,6 +129,7 @@ def get_frames(q: mp.Queue, source: int | str, external_q: mp.Queue) -> None:
     Passes None as an indicator of stream ending \n
     :param q: queue used for transferring data between 2 processes
     :param source: video source. Expected 0 for camera or a string value for a file
+    :param external_q: TODO
     :return: None
     :raises Nothing: TODO
     """
@@ -109,15 +138,17 @@ def get_frames(q: mp.Queue, source: int | str, external_q: mp.Queue) -> None:
     is_frame = True
     delay = 0          # Actual delay
     fps = 0            # For video capture (not cam)
+    timings = CustomTimer()
 
     if type(source) == str:
         # Getting fps and calculation the delay in msecs
         fps = istream.get(cv.CAP_PROP_FPS)
-        delay = int(1000. / fps)
+        delay = 1000. / fps
 
         # Getting frames while possible
         while True:
             is_frame, frame = istream.read()
+            timings.count()
 
             # Sending for processing
             q.put((delay, frame))
@@ -127,7 +158,7 @@ def get_frames(q: mp.Queue, source: int | str, external_q: mp.Queue) -> None:
                 break
 
             # Delaying the next reading (can afford since it's from the file) -> no queue overflow
-            cv.waitKey(delay)
+            cv.waitKey(int(delay))
     else:
         # For time measurements
         prev = time.time()
@@ -148,6 +179,7 @@ def get_frames(q: mp.Queue, source: int | str, external_q: mp.Queue) -> None:
 
     # Releasing capturing object
     istream.release()
+    external_q.put(timings)
 
     return None
 
@@ -157,12 +189,17 @@ def processing(q: mp.Queue, transmitter: conn.Connection, external_q: mp.Queue) 
     Processes the incoming frame and then transferring it to another process responsible for drawing
     :param q: queue used for transferring source frames to this process. Tuples of (delay, frame) are expected
     :param transmitter: connection object used for transferring same tuple for drawing after processing
+    :param external_q: TODO
     :return: None
     :raises Nothing: TODO
     """
+    timings = CustomTimer()
     # Getting the first frame outside a cycle to grab source data
     tmp_delay, tmp_frame = q.get()
-    frame = FrameProcessor(tmp_frame, tmp_delay)
+    timings.count()
+    frame = FrameProcessor(tmp_frame)
+    frame.delay = tmp_delay
+    frame.actual_delay = timings.delay
 
     prev_recording = time.time()
     # Processing incoming frames till there are no frames left
@@ -180,16 +217,18 @@ def processing(q: mp.Queue, transmitter: conn.Connection, external_q: mp.Queue) 
         frame.rescale_with_fields(desired_width, desired_height)
 
         # Source delay is measured in msc's, that's why we use 1000. * ...
-        frame.actual_delay = time.time() - prev_recording
-        frame.source_fps = int(1000. / frame.delay)
-        #frame.show_fps()
+        frame.show_fps()
 
         # Sending forward to showing part
         transmitter.send((frame.delay, frame.img))
 
         # Receiving actual delay between frame readings and the frame itself
         frame.delay, frame.img = q.get()
-        prev_recording = time.time()
+        timings.count()
+        frame.actual_delay = timings.delay
+
+    external_q.put(timings)
+
     return None
 
 
@@ -197,9 +236,11 @@ def show_frames(receiver: conn.Connection | None, external_q: mp.Queue) -> None:
     """
     Function designed for raw frame drawing in a separate process with a given delay
     :param receiver: connection object used for receiving data. Tuples (delay, frame) expected
+    :param external_q: TODO
     :return: None
     :raises Nothing: TODO
     """
+    timings = CustomTimer()
     # Showing frames while there are frames to show
     while True:
         # Receiving actual delay between frame readings
@@ -211,7 +252,10 @@ def show_frames(receiver: conn.Connection | None, external_q: mp.Queue) -> None:
             break
 
         cv.imshow("Some video", frame)
+        timings.count()
         cv.waitKey(1)
+
+    external_q.put(timings)
 
     return None
 
@@ -219,18 +263,20 @@ def show_frames(receiver: conn.Connection | None, external_q: mp.Queue) -> None:
 if __name__ == "__main__":
 
     # source = "World Of Warcraft - Retail 2022.01.24 - 17.54.03.01.mp4"
-    source = 0
-    # source = "Новиков 5.2 лекция 15.03.mkv"
+    # source = 0
+    source = "Новиков 5.2 лекция 15.03.mkv"
 
-    queue = mp.Queue()
-    ext_q = mp.Queue()
-    capture_proc = mp.Process(target=get_frames, args=(queue, source, ext_q))
+    inner_queue = mp.Queue()
+    reader_q, proc_q, show_q = mp.Queue(), mp.Queue(), mp.Queue()
+    capture_proc = mp.Process(target=get_frames, args=(inner_queue, source, reader_q))
     capture_proc.start()
     operation_conn, output_conn = mp.Pipe()
-    operation_proc = mp.Process(target=processing, args=(queue, operation_conn, ext_q))
+    operation_proc = mp.Process(target=processing, args=(inner_queue, operation_conn, proc_q))
     operation_proc.start()
-    showing_proc = mp.Process(target=show_frames, args=(output_conn, ext_q))
+    showing_proc = mp.Process(target=show_frames, args=(output_conn, show_q))
     showing_proc.start()
+
+    res = [reader_q.get(), proc_q.get(), show_q.get()]
 
     capture_proc.join()
     operation_proc.join()
