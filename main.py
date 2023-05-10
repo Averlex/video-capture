@@ -8,6 +8,8 @@ import numpy as np
 """
 logs
 calculating resizing params on class init for FrameProcessor
+
+All measurements are performed AFTER reading/getting/showing new frame
 """
 
 
@@ -129,21 +131,21 @@ def get_frames(q: mp.Queue, source: int | str, external_q: mp.Queue) -> None:
     Passes None as an indicator of stream ending \n
     :param q: queue used for transferring data between 2 processes
     :param source: video source. Expected 0 for camera or a string value for a file
-    :param external_q: TODO
+    :param external_q: mp.Queue object used to deliver timings to the host process
     :return: None
-    :raises Nothing: TODO
     """
     # Initializing capture object
     istream = cv.VideoCapture(source)
     is_frame = True
-    delay = 0          # Actual delay
-    fps = 0            # For video capture (not cam)
-    timings = CustomTimer()
+    delay = 0                       # Actual delay
+    fps = 0                         # For video capture (not cam)
+    timings = CustomTimer()         # For time measurements
 
     if type(source) == str:
         # Getting fps and calculation the delay in msecs
         fps = istream.get(cv.CAP_PROP_FPS)
-        delay = 1000. / fps
+        delay = 1000. / fps         # For passing to other workers
+        int_delay = int(delay)      # For delaying reading
 
         # Getting frames while possible
         while True:
@@ -151,28 +153,22 @@ def get_frames(q: mp.Queue, source: int | str, external_q: mp.Queue) -> None:
             timings.count()
 
             # Sending for processing
-            q.put((delay, frame))
+            q.put((timings.delay, frame))
 
             # No frame read means that no more are expected
             if not is_frame:
                 break
 
             # Delaying the next reading (can afford since it's from the file) -> no queue overflow
-            cv.waitKey(int(delay))
+            cv.waitKey(int_delay)
     else:
-        # For time measurements
-        prev = time.time()
-
         # Getting frames while possible
         while True:
             # Measuring time between readings and perform the next reading
-            delay = int((time.time() - prev) * 1000)
-            if delay == 0:
-                delay = 1
             is_frame, frame = istream.read()
-            prev = time.time()
+            timings.count()
 
-            q.put((delay, frame))
+            q.put((timings.delay, frame))
             # No frame read means that no more are expected
             if is_frame is None:
                 break
@@ -189,9 +185,8 @@ def processing(q: mp.Queue, transmitter: conn.Connection, external_q: mp.Queue) 
     Processes the incoming frame and then transferring it to another process responsible for drawing
     :param q: queue used for transferring source frames to this process. Tuples of (delay, frame) are expected
     :param transmitter: connection object used for transferring same tuple for drawing after processing
-    :param external_q: TODO
+    :param external_q: mp.Queue object used to deliver timings to the host process
     :return: None
-    :raises Nothing: TODO
     """
     timings = CustomTimer()
     # Getting the first frame outside a cycle to grab source data
@@ -236,9 +231,8 @@ def show_frames(receiver: conn.Connection | None, external_q: mp.Queue) -> None:
     """
     Function designed for raw frame drawing in a separate process with a given delay
     :param receiver: connection object used for receiving data. Tuples (delay, frame) expected
-    :param external_q: TODO
+    :param external_q: mp.Queue object used to deliver timings to the host process
     :return: None
-    :raises Nothing: TODO
     """
     timings = CustomTimer()
     # Showing frames while there are frames to show
@@ -266,18 +260,29 @@ if __name__ == "__main__":
     # source = 0
     source = "Новиков 5.2 лекция 15.03.mkv"
 
+    # Internal queue for process data exchanging (reading and processing)
     inner_queue = mp.Queue()
+    # External queues for collecting time measurements from workers
     reader_q, proc_q, show_q = mp.Queue(), mp.Queue(), mp.Queue()
+    # Connectors for exchanging data between processing and output workers
+    operation_conn, output_conn = mp.Pipe()
+
+    # Reading process init
     capture_proc = mp.Process(target=get_frames, args=(inner_queue, source, reader_q))
     capture_proc.start()
-    operation_conn, output_conn = mp.Pipe()
+
+    # Processing init
     operation_proc = mp.Process(target=processing, args=(inner_queue, operation_conn, proc_q))
     operation_proc.start()
+
+    # Output init
     showing_proc = mp.Process(target=show_frames, args=(output_conn, show_q))
     showing_proc.start()
 
+    # Collecting time measurements from processes
     res = [reader_q.get(), proc_q.get(), show_q.get()]
 
+    # Locking until each process is done
     capture_proc.join()
     operation_proc.join()
     showing_proc.join()
