@@ -3,13 +3,13 @@ import multiprocessing as mp
 import multiprocessing.connection as conn
 import time
 import numpy as np
-
+from datetime import datetime
 
 """
-logs
-calculating resizing params on class init for FrameProcessor
+TODO: improve logs, write deltas
+TODO: calculating resizing params on class init for FrameProcessor (width/height ratios)
 
-All measurements are performed AFTER reading/getting/showing new frame
+NOTE: All measurements are performed AFTER reading/getting/showing new frame
 """
 
 
@@ -256,9 +256,9 @@ def show_frames(receiver: conn.Connection | None, external_q: mp.Queue) -> None:
 
 if __name__ == "__main__":
 
-    # source = "World Of Warcraft - Retail 2022.01.24 - 17.54.03.01.mp4"
+    source = "World Of Warcraft - Retail 2022.01.24 - 17.54.03.01.mp4"
     # source = 0
-    source = "Новиков 5.2 лекция 15.03.mkv"
+    # source = "Новиков 5.2 лекция 15.03.mkv"
 
     # Internal queue for process data exchanging (reading and processing)
     inner_queue = mp.Queue()
@@ -280,9 +280,22 @@ if __name__ == "__main__":
     showing_proc.start()
 
     # Collecting time measurements from processes
-    res = [reader_q.get(), proc_q.get(), show_q.get()]
+    times = [reader_q.get(), proc_q.get(), show_q.get()]
 
     # Locking until each process is done
     capture_proc.join()
     operation_proc.join()
     showing_proc.join()
+
+    # Some simple logging
+    with open("time_logs.txt", 'w') as f:
+        def normalize(val: float) -> str: return datetime.fromtimestamp(val).strftime("%H:%M:%S.%f")
+        f.write(f"Reading init: {normalize(times[0].values[0])},\tprocessing init: {normalize(times[1].values[0])},\t"
+                f"output init: {normalize(times[2].values[0])}\n")
+        f.write("-" * 100 + "\n")
+        f.write("Frame\t|\tRead\t\t|\tProcessed\t|\tShown\n")
+        f.write("-" * 80 + "\n")
+        for indx in range(1, len(times[2].values)):
+            f.write(f"{indx}\t|\t{normalize(times[0].values[indx])}\t|\t"
+                    f"{normalize(times[1].values[indx])}\t|\t"
+                    f"{normalize(times[2].values[indx])}\n")
