@@ -258,10 +258,7 @@ def show_frames(receiver: conn.Connection | None, external_q: mp.Queue) -> None:
 
 
 if __name__ == "__main__":
-
-    # source = "World Of Warcraft - Retail 2022.01.24 - 17.54.03.01.mp4"
     source = 0
-    # source = "Новиков 5.2 лекция 15.03.mkv"
 
     # Internal queue for process data exchanging (reading and processing)
     inner_queue = mp.Queue()
